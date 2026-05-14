@@ -1,0 +1,11 @@
+{
+  "name": "ad-spend-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "weekly-report": "node scripts/send-weekly-report.mjs",
+    "weekly-report:preview": "node scripts/send-weekly-report.mjs --dry-run"
+  }
+}

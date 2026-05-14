@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ad Spend Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="login-screen" id="login-screen" hidden>
+      <form class="login-card" id="login-form" action="/api/login" method="post">
+        <img src="/assets/bonalti-lead-intelligence.png" alt="Bonalti" />
+        <p class="eyebrow">Private Dashboard</p>
+        <h1>Lead Intelligence</h1>
+        <label>
+          Password
+          <input id="dashboard-password" name="password" type="password" autocomplete="current-password" placeholder="Enter password" />
+        </label>
+        <button type="submit">Unlock Dashboard</button>
+        <div class="login-error" id="login-error"></div>
+      </form>
+    </div>
+
+    <aside class="sidebar" aria-label="Companies">
+      <div class="brand">
+        <img src="/assets/bonalti-lead-intelligence.png" alt="Bonalti" />
+        <small>Lead Intelligence</small>
+      </div>
+      <p class="sidebar-label">Companies</p>
+      <nav class="company-nav" id="company-nav"></nav>
+    </aside>
+
+    <main class="shell">
+      <header class="topbar">
+        <div class="company-title">
+          <div class="logo-frame hero-logo">
+            <img id="selected-logo" alt="" src="/assets/south-texas-builders.png" />
+          </div>
+          <div>
+            <p class="eyebrow" id="selected-subtitle">Meta Ads + Google Sheets</p>
+            <h1 id="selected-company">Ad Spend Dashboard</h1>
+          </div>
+        </div>
+      </header>
+
+      <section class="date-panel" aria-label="Date range">
+        <div class="range-buttons" role="group" aria-label="Quick date ranges">
+          <button data-range="this-month">This Month</button>
+          <button data-range="last-month">Last Month</button>
+          <button data-range="this-year">This Year</button>
+          <button data-range="last-year">Last Year</button>
+          <button class="active" data-range="custom">Custom</button>
+        </div>
+        <div class="custom-range">
+          <label>
+            From
+            <input type="date" id="since-date" value="2026-03-01" />
+          </label>
+          <label>
+            To
+            <input type="date" id="until-date" value="2026-03-31" />
+          </label>
+          <button id="apply-range">Apply</button>
+        </div>
+      </section>
+
+      <section class="status-strip">
+        <span id="sheet-status">Sheet: loading</span>
+        <span id="meta-status">Meta: loading</span>
+        <span id="updated-status">Updated: loading</span>
+      </section>
+
+      <section class="metric-grid" id="metric-grid" aria-label="Selected company metrics"></section>
+
+      <section class="layout">
+        <div class="panel funnel-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Funnel</p>
+              <h2>Conversion Summary</h2>
+            </div>
+          </div>
+          <div class="funnel" id="funnel"></div>
+        </div>
+        <div class="panel meeting-panel">
+          <div class="meeting-list-wrap">
+            <div class="meeting-list-head">
+              <div>
+                <p class="eyebrow">Clients</p>
+                <h3>Construction Meetings</h3>
+              </div>
+              <span id="meeting-count">0 meetings</span>
+            </div>
+            <div class="meeting-list" id="meeting-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel campaign-panel" aria-label="Campaign breakdown">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Meta Campaigns</p>
+            <h2>Campaign Breakdown</h2>
+          </div>
+          <span id="campaign-count" class="panel-pill">0 campaigns</span>
+        </div>
+        <div class="campaign-groups" id="campaign-groups"></div>
+      </section>
+
+      <section class="panel executive-panel" aria-label="AI executive summary">
+        <div class="panel-head executive-head">
+          <div>
+            <p class="eyebrow">AI Strategy</p>
+            <h2>Executive Summary</h2>
+          </div>
+          <button id="generate-summary" class="summary-button">Generate Summary</button>
+        </div>
+        <div class="summary-status" id="summary-status">Generate a CEO-level readout using the selected company, date range, Meta campaigns, top ads, and Google Sheet funnel data.</div>
+        <div class="summary-grid" id="summary-grid"></div>
+
+        <div class="ai-chat">
+          <div class="ai-chat-head">
+            <div>
+              <p class="eyebrow">Ask AI</p>
+              <h3>CEO Advisor Chat</h3>
+            </div>
+            <span>Answers only from this dashboard data</span>
+          </div>
+          <form id="ai-chat-form" class="ai-chat-form">
+            <input id="ai-question" type="text" autocomplete="off" placeholder="Ask which campaigns to scale, where CAC is high, or what to do next..." />
+            <button id="ask-ai" type="submit">Ask</button>
+          </form>
+          <div class="ai-answer" id="ai-answer">Ask a question about the selected company and date range.</div>
+        </div>
+      </section>
+
+      <section class="panel report-panel" aria-label="Weekly email report">
+        <div class="panel-head report-head">
+          <div>
+            <p class="eyebrow">Weekly Report</p>
+            <h2>Email + Printable Report</h2>
+          </div>
+          <label class="report-toggle">
+            <input id="report-enabled" type="checkbox" />
+            <span>Friday email</span>
+          </label>
+        </div>
+        <div class="report-controls">
+          <label>
+            Send report to
+            <input id="report-email" type="text" placeholder="email1@example.com, email2@example.com" />
+          </label>
+          <button id="save-report-settings">Save Settings</button>
+          <button id="generate-report">Generate Report</button>
+          <button id="send-report-now">Send Email Now</button>
+          <button id="print-report" disabled>Print</button>
+        </div>
+        <div class="summary-status" id="report-status">Turn on Friday email, or generate the same report here anytime.</div>
+        <div class="report-preview" id="report-preview"></div>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
