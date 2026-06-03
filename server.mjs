@@ -14,6 +14,9 @@ const config = {
   port: Number(process.env.PORT || 4173),
   sheetId: process.env.GOOGLE_SHEET_ID || "1rjmXjtyBTmch7SJY58cA8ZGKYWlwPxEe0WOd2Ce9i2Q",
   sheetGid: process.env.GOOGLE_SHEET_GID || "1610026683",
+  supabaseUrl: process.env.SUPABASE_URL || "",
+  supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY || "",
+  supabaseStartDate: process.env.SUPABASE_START_DATE || "2026-06-01",
   googleOAuthClientFile: process.env.GOOGLE_OAUTH_CLIENT_FILE || "",
   googleOAuthTokenFile: process.env.GOOGLE_OAUTH_TOKEN_FILE || path.join(__dirname, ".google-sheets-token.json"),
   googleOAuthClientJson: process.env.GOOGLE_OAUTH_CLIENT_JSON || "",
@@ -114,7 +117,7 @@ const demoSpend = [
 ];
 
 const cache = new Map();
-const cacheTtlMs = Number(process.env.CACHE_TTL_SECONDS || 300) * 1000;
+const cacheTtlMs = Number(process.env.CACHE_TTL_SECONDS || 900) * 1000;
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -171,21 +174,47 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, data);
     }
 
+    if (url.pathname === "/api/campaign-insights") {
+      const range = normalizeRange(url.searchParams.get("since"), url.searchParams.get("until"));
+      const sourceId = url.searchParams.get("sourceId") || sourceDefinitions[0].id;
+      const meta = await fetchMetaSpend(range, { includeCreatives: true });
+      const source = sourceDefinitions.find((item) => item.id === sourceId) || sourceDefinitions[0];
+      const rows = meta.rows.filter((row) => belongsToSource(row, source));
+      return sendJson(res, {
+        updatedAt: new Date().toISOString(),
+        range,
+        sourceId: source.id,
+        sourceName: source.name,
+        mode: meta.live ? "live" : "demo",
+        campaigns: buildCampaignBreakdown(rows)
+      });
+    }
+
     if (url.pathname === "/api/executive-summary") {
       if (req.method !== "POST") return sendJson(res, { error: "Method not allowed" }, 405);
       const body = await readJsonBody(req);
       const range = normalizeRange(body.since, body.until);
-      const data = await getDashboardData("daily", range);
+      const data = await getDashboardData("daily", range, { includeCampaigns: true, includeCreatives: true });
       const source = data.sourceTotals.find((item) => item.id === body.sourceId) || data.sourceTotals[0];
       const summary = await generateExecutiveSummary(source, data.range);
       return sendJson(res, summary);
+    }
+
+    if (url.pathname === "/api/action-plan") {
+      if (req.method !== "POST") return sendJson(res, { error: "Method not allowed" }, 405);
+      const body = await readJsonBody(req);
+      const range = normalizeRange(body.since, body.until);
+      const data = await getDashboardData("daily", range, { includeCampaigns: true, includeCreatives: true });
+      const source = data.sourceTotals.find((item) => item.id === body.sourceId) || data.sourceTotals[0];
+      const actionPlan = await generateActionPlan(source, data.range);
+      return sendJson(res, actionPlan);
     }
 
     if (url.pathname === "/api/ask-ai") {
       if (req.method !== "POST") return sendJson(res, { error: "Method not allowed" }, 405);
       const body = await readJsonBody(req);
       const range = normalizeRange(body.since, body.until);
-      const data = await getDashboardData("daily", range);
+      const data = await getDashboardData("daily", range, { includeCampaigns: true, includeCreatives: true });
       const source = data.sourceTotals.find((item) => item.id === body.sourceId) || data.sourceTotals[0];
       const answer = await answerDashboardQuestion(source, data.range, body.question);
       return sendJson(res, answer);
@@ -237,11 +266,18 @@ if (isMainModule()) {
   });
 }
 
-async function getDashboardData(granularity, range) {
-  const sheet = await fetchSheetData(range);
-  const meta = await fetchMetaSpend(range);
-  const sourceTotals = buildSourceTotals(sheet.dailyRows, meta.rows, sheet.meetingRows);
-  const timeline = buildTimeline(sheet.dailyRows, meta.rows, granularity);
+async function getDashboardData(granularity, range, options = {}) {
+  const [leadData, meta] = await Promise.all([
+    fetchLeadData(range),
+    fetchMetaSpend(range, {
+      includeCampaigns: Boolean(options.includeCampaigns),
+      includeCreatives: Boolean(options.includeCreatives)
+    })
+  ]);
+  const sourceTotals = buildSourceTotals(leadData.dailyRows, meta.rows, leadData.meetingRows, {
+    includeCampaigns: Boolean(options.includeCampaigns)
+  });
+  const timeline = buildTimeline(leadData.dailyRows, meta.rows, granularity);
   const totals = sumTotals(sourceTotals);
 
   return {
@@ -250,7 +286,7 @@ async function getDashboardData(granularity, range) {
     range,
     mode: meta.live ? "live" : "demo",
     connection: {
-      sheet: "live",
+      sheet: leadData.connection,
       meta: meta.live ? "live" : "demo"
     },
     totals,
@@ -258,6 +294,81 @@ async function getDashboardData(granularity, range) {
     timeline,
     metricLabels
   };
+}
+
+async function generateActionPlan(source, range) {
+  const payload = buildSummaryPayload(source, range);
+
+  if (!config.openAiKey) {
+    return fallbackActionPlan(payload);
+  }
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${config.openAiKey}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      model: config.openAiModel,
+      temperature: 0.1,
+      input: [
+        {
+          role: "system",
+          content: "You are a practical marketing operator advising a CEO. Use only the provided dashboard data. Do not invent revenue, causes, or attribution. Be brief."
+        },
+        {
+          role: "user",
+          content: `Return only valid JSON with this exact shape: {"scale":"one short sentence","watch":"one short sentence","fix":"one short sentence"}. Recommend what to scale, what to watch, and what to fix based only on this data.\n\nDashboard data:\n${JSON.stringify(payload)}`
+        }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`AI action plan failed: ${response.status} ${await response.text()}`);
+  }
+
+  const result = await response.json();
+  const text = result.output_text || result.output?.flatMap((item) => item.content || []).map((item) => item.text || "").join("\n") || "";
+  return parseActionPlanJson(text, payload);
+}
+
+function fallbackActionPlan(payload) {
+  const campaigns = payload.topCampaigns || [];
+  const best = [...campaigns].sort((a, b) => {
+    if ((b.leads || 0) !== (a.leads || 0)) return (b.leads || 0) - (a.leads || 0);
+    return (a.cpl || 999999) - (b.cpl || 999999);
+  })[0];
+  const weak = [...campaigns].sort((a, b) => {
+    const aScore = a.leads ? a.cpl : (a.spend || 0) * 2;
+    const bScore = b.leads ? b.cpl : (b.spend || 0) * 2;
+    return bScore - aScore;
+  })[0];
+
+  return {
+    scale: best ? `Scale ${best.name} if budget is available; it has the strongest lead signal in this range.` : "Scale is not clear yet because campaign lead data is limited.",
+    watch: `Watch cost per meeting at ${formatMoneyText(payload.kpis.costPerMeeting)} and construction meetings at ${payload.kpis.constructionMeetings}.`,
+    fix: weak ? `Fix or review ${weak.name}; it has the weakest spend-to-lead signal in this range.` : "Fix is not clear yet because weak campaign data is limited.",
+    mode: "fallback"
+  };
+}
+
+function parseActionPlanJson(text, payload) {
+  try {
+    const cleaned = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
+    const parsed = JSON.parse(cleaned);
+    return {
+      scale: String(parsed.scale || "").trim() || fallbackActionPlan(payload).scale,
+      watch: String(parsed.watch || "").trim() || fallbackActionPlan(payload).watch,
+      fix: String(parsed.fix || "").trim() || fallbackActionPlan(payload).fix,
+      mode: "ai",
+      model: config.openAiModel,
+      generatedAt: new Date().toISOString()
+    };
+  } catch {
+    return fallbackActionPlan(payload);
+  }
 }
 
 async function generateExecutiveSummary(source, range) {
@@ -359,7 +470,7 @@ async function answerDashboardQuestion(source, range, question) {
 }
 
 export async function createWeeklyReport(range = previousWeekRange()) {
-  const data = await getDashboardData("daily", range);
+  const data = await getDashboardData("daily", range, { includeCampaigns: true, includeCreatives: true });
   const sources = data.sourceTotals.map((source) => {
     const topCampaign = bestByLeads(source.campaignBreakdown || []);
     const topAd = bestByLeads((source.campaignBreakdown || []).flatMap((campaign) => campaign.ads || []));
@@ -653,19 +764,58 @@ async function fetchSheetDailyRows(range) {
   return sheet.dailyRows;
 }
 
+async function fetchLeadData(range) {
+  const ranges = splitLeadDataRange(range);
+  const parts = await Promise.all([
+    ranges.sheet ? fetchSheetData(ranges.sheet) : null,
+    ranges.supabase ? fetchSupabaseLeadData(ranges.supabase) : null
+  ]);
+  const activeParts = parts.filter(Boolean);
+
+  return {
+    dailyRows: activeParts.flatMap((part) => part.dailyRows),
+    meetingRows: activeParts.flatMap((part) => part.meetingRows),
+    connection: activeParts.map((part) => part.connection).join(" + ") || "none"
+  };
+}
+
+function splitLeadDataRange(range) {
+  const cutoff = config.supabaseStartDate;
+  const result = { sheet: null, supabase: null };
+
+  if (range.since < cutoff) {
+    result.sheet = {
+      since: range.since,
+      until: range.until < cutoff ? range.until : previousDate(cutoff)
+    };
+  }
+
+  if (range.until >= cutoff) {
+    result.supabase = {
+      since: range.since > cutoff ? range.since : cutoff,
+      until: range.until
+    };
+  }
+
+  return result;
+}
+
 async function fetchSheetData(range) {
   const matchingTabs = config.sheetTabs.filter((tab) => monthOverlapsRange(tab, range));
   const tabData = await Promise.all(matchingTabs.map(async (tab) => {
     const rows = await cached(`sheet:${tab.gid}`, () => fetchSheetRows(tab.gid));
+    const monthlyTotalRows = parseMonthlyTotalRows(rows, tab);
+    const dailyRows = parseSheetRows(rows, tab).filter((row) => isWithinRange(row.date, range));
     return {
-      dailyRows: parseSheetRows(rows, tab).filter((row) => isWithinRange(row.date, range)),
+      dailyRows: shouldUseMonthlyTotal(tab, range) && monthlyTotalRows.length ? monthlyTotalRows : dailyRows,
       meetingRows: parseMeetingRows(rows, tab)
     };
   }));
 
   return {
     dailyRows: tabData.flatMap((tab) => tab.dailyRows),
-    meetingRows: tabData.flatMap((tab) => tab.meetingRows)
+    meetingRows: tabData.flatMap((tab) => tab.meetingRows),
+    connection: "Google Sheets"
   };
 }
 
@@ -684,6 +834,156 @@ async function fetchSheetRows(gid) {
     throw new Error(`Google Sheet tab ${gid} could not be read: ${response.status}`);
   }
   return parseCsv(await response.text());
+}
+
+async function fetchSupabaseLeadData(range) {
+  if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
+    throw new Error("Supabase is required for lead data from June 2026 forward. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
+  }
+
+  const [companies, dailyEntries, meetings] = await Promise.all([
+    supabaseSelect("companies", "id,slug,name,active", { active: "eq.true" }),
+    supabaseSelect("daily_entries", "*", {
+      entry_date: [`gte.${range.since}`, `lte.${range.until}`]
+    }),
+    supabaseSelect("meetings", "*", {
+      meeting_date: [`gte.${range.since}`, `lte.${range.until}`]
+    })
+  ]);
+
+  const companyIdToSourceId = new Map(
+    companies
+      .map((company) => [company.id, sourceIdFromSupabaseSlug(company.slug)])
+      .filter(([, sourceId]) => Boolean(sourceId))
+  );
+
+  return {
+    dailyRows: buildSupabaseDailyRows(dailyEntries, meetings, companyIdToSourceId),
+    meetingRows: buildSupabaseMeetingRows(meetings, companyIdToSourceId),
+    connection: "Supabase"
+  };
+}
+
+async function supabaseSelect(table, columns, filters = {}) {
+  const url = new URL(`${config.supabaseUrl.replace(/\/$/, "")}/rest/v1/${table}`);
+  url.searchParams.set("select", columns);
+
+  for (const [column, value] of Object.entries(filters)) {
+    const values = Array.isArray(value) ? value : [value];
+    for (const filter of values) {
+      url.searchParams.append(column, filter);
+    }
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      apikey: config.supabaseServiceRoleKey,
+      authorization: `Bearer ${config.supabaseServiceRoleKey}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Supabase ${table} read failed: ${response.status} ${await response.text()}`);
+  }
+
+  return response.json();
+}
+
+function buildSupabaseDailyRows(entries, meetings, companyIdToSourceId) {
+  const rowsByDate = new Map();
+
+  for (const entry of entries) {
+    const sourceId = companyIdToSourceId.get(entry.company_id);
+    if (!sourceId || !isDateString(entry.entry_date)) continue;
+
+    const row = ensureSupabaseDailyRow(rowsByDate, entry.entry_date);
+
+    row.sources[sourceId] = {
+      ...row.sources[sourceId],
+      leads: toNumber(entry.leads),
+      noAnswer: toNumber(entry.no_answer),
+      notQualified: toNumber(entry.not_qualified),
+      qualified: toNumber(entry.qualified_leads)
+    };
+
+    rowsByDate.set(entry.entry_date, row);
+  }
+
+  for (const meeting of meetings) {
+    const sourceId = companyIdToSourceId.get(meeting.company_id);
+    if (!sourceId || !isDateString(meeting.meeting_date)) continue;
+
+    const row = ensureSupabaseDailyRow(rowsByDate, meeting.meeting_date);
+    const source = row.sources[sourceId];
+    const type = normalizeSupabaseMeetingType(meeting.meeting_type);
+    const status = normalizeSupabaseMeetingStatus(meeting.status);
+
+    if (type === "Lender") source.lender += 1;
+    if (type === "Construction") source.meetings += 1;
+    if (status === "no-show") source.noShows += 1;
+    if (status === "attended") source.attended += 1;
+    if (status === "closed") source.closed += 1;
+
+    rowsByDate.set(meeting.meeting_date, row);
+  }
+
+  return [...rowsByDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function ensureSupabaseDailyRow(rowsByDate, date) {
+  return rowsByDate.get(date) || {
+    date,
+    day: Number(date.slice(8, 10)),
+    sources: blankSourceMetrics()
+  };
+}
+
+function buildSupabaseMeetingRows(meetings, companyIdToSourceId) {
+  return meetings
+    .map((meeting) => {
+      const sourceId = companyIdToSourceId.get(meeting.company_id);
+      const date = meeting.meeting_date;
+      if (!sourceId || !isDateString(date)) return null;
+
+      const status = normalizeSupabaseMeetingStatus(meeting.status);
+      const type = normalizeSupabaseMeetingType(meeting.meeting_type);
+      return {
+        sourceId,
+        month: date.slice(0, 7),
+        sortDate: date,
+        date,
+        dateKnown: true,
+        weekOfMonth: weekOfMonth(date),
+        client: cleanText(meeting.client_name),
+        type,
+        status,
+        statusLabel: status === "closed" ? "Closed" : status === "attended" ? "Attended" : "",
+        closed: status === "closed"
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.sortDate.localeCompare(b.sortDate) || a.client.localeCompare(b.client));
+}
+
+function blankSourceMetrics() {
+  return Object.fromEntries(sourceDefinitions.map((source) => [source.id, emptyMetrics()]));
+}
+
+function sourceIdFromSupabaseSlug(slug) {
+  if (slug === "south") return "south-texas-builder";
+  if (slug === "cuates") return "cuates";
+  return "";
+}
+
+function normalizeSupabaseMeetingType(type) {
+  return type === "lender" ? "Lender" : "Construction";
+}
+
+function normalizeSupabaseMeetingStatus(status) {
+  if (status === "cerrado") return "closed";
+  if (status === "atendida") return "attended";
+  if (status === "no_show") return "no-show";
+  return status || "unknown";
 }
 
 async function fetchSheetRowsWithGoogleApi(gid) {
@@ -831,6 +1131,60 @@ function parseSheetRows(rows, tab) {
     });
 }
 
+function parseMonthlyTotalRows(rows, tab) {
+  const totalRow = findMonthlyTotalRow(rows, tab);
+
+  if (!totalRow) return [];
+
+  const sources = {};
+  for (const source of sourceDefinitions) {
+    sources[source.id] = {};
+    for (const [metric, index] of Object.entries(source.columns)) {
+      sources[source.id][metric] = toNumber(totalRow[index]);
+    }
+  }
+
+  return [{
+    date: monthComparisonEnd(tab),
+    day: null,
+    sources,
+    monthlyTotal: true
+  }];
+}
+
+function findMonthlyTotalRow(rows, tab) {
+  const maxDay = daysInMonth(tab.year, tab.month);
+
+  for (let index = 0; index < rows.length - 1; index += 1) {
+    const headerRow = rows[index];
+    const candidateRow = rows[index + 1];
+    const rawDay = String(candidateRow[0] ?? "").trim();
+    const day = Number(rawDay);
+
+    if (/^\d+$/.test(rawDay) && day >= 1 && day <= maxDay) continue;
+    if (!sourceDefinitions.some((source) => toNumber(candidateRow[source.columns.leads]) > 0)) continue;
+    if (monthlyTotalHeaderScore(headerRow) >= 3) return candidateRow;
+  }
+
+  return null;
+}
+
+function monthlyTotalHeaderScore(row) {
+  let score = 0;
+
+  for (const source of sourceDefinitions) {
+    const columns = source.columns;
+    if (/not\s+qualified/i.test(cleanText(row[columns.notQualified]))) score += 1;
+    if (/qualified/i.test(cleanText(row[columns.qualified]))) score += 1;
+    if (/reunion\s+lender/i.test(cleanText(row[columns.lender]))) score += 1;
+    if (/reuniones?\s+agendada/i.test(cleanText(row[columns.meetings]))) score += 1;
+    if (/no\s+show/i.test(cleanText(row[columns.noShows]))) score += 1;
+    if (/closed/i.test(cleanText(row[columns.closed]))) score += 1;
+  }
+
+  return score;
+}
+
 function parseMeetingRows(rows, tab) {
   const meetingRows = [];
   const tables = findMeetingTables(rows);
@@ -937,7 +1291,7 @@ function parseSheetDate(value, tab) {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-async function fetchMetaSpend(range) {
+async function fetchMetaSpend(range, options = {}) {
   const accounts = Object.entries(config.metaAccounts).filter(([sourceId, accountId]) => accountId && config.metaTokens[sourceId]);
 
   if (!accounts.length) {
@@ -946,7 +1300,13 @@ async function fetchMetaSpend(range) {
 
   const results = await Promise.all(accounts.map(async ([sourceId, accountId]) => {
     try {
-      const rows = await cached(`meta:${sourceId}:${accountId}:${range.since}:${range.until}`, () => fetchMetaAccountSpend(sourceId, accountId, range));
+      const cacheKey = `meta:${options.includeCreatives ? "creative" : "base"}:${sourceId}:${accountId}:${range.since}:${range.until}`;
+      const rows = await cached(cacheKey, () => {
+        if (!options.includeCampaigns && !options.includeCreatives) {
+          return fetchMetaAccountSummary(sourceId, accountId, range);
+        }
+        return fetchMetaAccountSpend(sourceId, accountId, range, options);
+      });
       return { rows, error: null };
     } catch (error) {
       return { rows: [], error: error.message };
@@ -963,7 +1323,53 @@ async function fetchMetaSpend(range) {
   return { live: true, rows, errors };
 }
 
-async function fetchMetaAccountSpend(sourceId, accountId, range) {
+async function fetchMetaAccountSummary(sourceId, accountId, range) {
+  const token = config.metaTokens[sourceId];
+  const account = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+  const params = new URLSearchParams({
+    access_token: token,
+    level: "account",
+    fields: "spend,reach,impressions,clicks,inline_link_clicks,actions,action_values,date_start,date_stop",
+    time_increment: "1",
+    time_range: JSON.stringify({ since: range.since, until: range.until }),
+    limit: "500"
+  });
+  let url = `https://graph.facebook.com/${config.metaVersion}/${account}/insights?${params}`;
+  const rows = [];
+
+  while (url) {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Meta API request failed for ${sourceName(sourceId)}: ${response.status} ${body}`);
+    }
+
+    const payload = await response.json();
+    rows.push(...(payload.data || []).map((row) => ({
+      sourceId,
+      date: row.date_start,
+      campaignId: "",
+      campaign: "",
+      adId: "",
+      adName: "",
+      spend: toNumber(row.spend),
+      reach: toNumber(row.reach),
+      impressions: toNumber(row.impressions),
+      clicks: toNumber(row.clicks),
+      linkClicks: toNumber(row.inline_link_clicks),
+      leads: extractActionValue(row.actions, ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped"]),
+      conversions: extractActionValue(row.actions, ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped", "onsite_conversion.messaging_conversation_started_7d"]),
+      conversionValue: extractActionValue(row.action_values, ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"])
+    })));
+
+    url = payload.paging?.next || "";
+  }
+
+  return rows;
+}
+
+async function fetchMetaAccountSpend(sourceId, accountId, range, options = {}) {
   const token = config.metaTokens[sourceId];
   const account = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
   const params = new URLSearchParams({
@@ -1006,6 +1412,8 @@ async function fetchMetaAccountSpend(sourceId, accountId, range) {
     url = payload.paging?.next || "";
   }
 
+  if (!options.includeCreatives) return rows;
+
   const creativeUrls = await fetchMetaAdCreativeUrls(sourceId, rows);
   return rows.map((row) => ({
     ...row,
@@ -1015,7 +1423,7 @@ async function fetchMetaAccountSpend(sourceId, accountId, range) {
 
 async function fetchMetaAdCreativeUrls(sourceId, rows) {
   const token = config.metaTokens[sourceId];
-  const adIds = [...new Set(rows.map((row) => row.adId).filter((id) => id && id !== "unknown"))].slice(0, 80);
+  const adIds = topCreativeAdIds(rows);
   const entries = await Promise.all(adIds.map(async (adId) => {
     try {
       const imageUrl = await cached(`meta-creative:${sourceId}:${adId}`, async () => {
@@ -1037,7 +1445,29 @@ async function fetchMetaAdCreativeUrls(sourceId, rows) {
   return new Map(entries);
 }
 
-function buildSourceTotals(sheetDaily, spendRows, meetingRows = []) {
+function topCreativeAdIds(rows) {
+  const ads = new Map();
+
+  for (const row of rows) {
+    if (!row.adId || row.adId === "unknown") continue;
+    const ad = ads.get(row.adId) || { adId: row.adId, leads: 0, spend: 0, impressions: 0 };
+    ad.leads += row.leads || 0;
+    ad.spend += row.spend || 0;
+    ad.impressions += row.impressions || 0;
+    ads.set(row.adId, ad);
+  }
+
+  return [...ads.values()]
+    .sort((a, b) => {
+      if (b.leads !== a.leads) return b.leads - a.leads;
+      if (b.spend !== a.spend) return b.spend - a.spend;
+      return b.impressions - a.impressions;
+    })
+    .slice(0, 24)
+    .map((ad) => ad.adId);
+}
+
+function buildSourceTotals(sheetDaily, spendRows, meetingRows = [], options = {}) {
   return sourceDefinitions.map((source) => {
     const sheetTotals = emptyMetrics();
 
@@ -1056,7 +1486,7 @@ function buildSourceTotals(sheetDaily, spendRows, meetingRows = []) {
       impressions: sumField(sourceSpendRows, "impressions"),
       clicks: sumField(sourceSpendRows, "clicks"),
       linkClicks: sumField(sourceSpendRows, "linkClicks"),
-      campaignBreakdown: buildCampaignBreakdown(sourceSpendRows),
+      campaignBreakdown: options.includeCampaigns ? buildCampaignBreakdown(sourceSpendRows) : [],
       meetingList: meetingRows.filter((row) => row.sourceId === source.id),
       ...sheetTotals
     });
@@ -1265,6 +1695,18 @@ function normalizeRange(since, until) {
 
 function isWithinRange(date, range) {
   return date >= range.since && date <= range.until;
+}
+
+function shouldUseMonthlyTotal(tab, range) {
+  const start = `${tab.year}-${String(tab.month).padStart(2, "0")}-01`;
+  return range.since <= start && range.until >= monthComparisonEnd(tab);
+}
+
+function monthComparisonEnd(tab) {
+  const month = String(tab.month).padStart(2, "0");
+  const end = `${tab.year}-${month}-${String(daysInMonth(tab.year, tab.month)).padStart(2, "0")}`;
+  const today = localDate(new Date());
+  return today.startsWith(`${tab.year}-${month}`) && today < end ? today : end;
 }
 
 function isDateString(value) {
@@ -1491,6 +1933,20 @@ function previousWeekRange() {
     since: localDate(priorFriday),
     until: localDate(friday)
   };
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function previousDate(dateString) {
+  return localDate(addDays(new Date(`${dateString}T00:00:00`), -1));
+}
+
+function localDate(date) {
+  return new Date(date).toISOString().slice(0, 10);
 }
 
 function formatReportDate(value) {
