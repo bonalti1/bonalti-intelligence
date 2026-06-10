@@ -63,7 +63,7 @@ Send it manually:
 npm run daily-text-report -- --force
 ```
 
-The daily text includes each company, yesterday's spend, leads, cost per lead, qualified leads, lender meetings, construction meetings, closed deals, and the best ad from Meta for that day.
+The daily text defaults to a 2-day delay so the data-entry sheet has time to be updated. It includes each company, spend, Meta leads, Meta cost per lead, funnel/sheet leads, qualified leads, lender meetings, construction meetings, closed deals, and the best ad from Meta for that day.
 
 Add these Render environment variables before sending:
 
@@ -71,6 +71,7 @@ Add these Render environment variables before sending:
 DAILY_REPORT_ENABLED=true
 DAILY_REPORT_CHANNEL=ghl
 DAILY_REPORT_TIMEZONE=America/Chicago
+DAILY_REPORT_LAG_DAYS=2
 DAILY_REPORT_TO=+19562576072
 GHL_DAILY_REPORT_WEBHOOK_URL=
 ```

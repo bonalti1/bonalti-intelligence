@@ -47,6 +47,7 @@ const config = {
   dailyReportTo: process.env.DAILY_REPORT_TO || "",
   dailyReportChannel: process.env.DAILY_REPORT_CHANNEL || "sms",
   dailyReportTimezone: process.env.DAILY_REPORT_TIMEZONE || "America/Chicago",
+  dailyReportLagDays: Math.max(1, Number(process.env.DAILY_REPORT_LAG_DAYS || 2)),
   ghlDailyReportWebhookUrl: process.env.GHL_DAILY_REPORT_WEBHOOK_URL || "",
   twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || "",
   twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || "",
@@ -650,6 +651,7 @@ export async function createDailyTextReport(range = previousDayRange()) {
     generatedAt: new Date().toISOString(),
     range,
     subject: `Daily Lead Gen Results - ${formatReportDate(range.since)}`,
+    lagDays: config.dailyReportLagDays,
     sources,
     note,
     text: buildDailyTextReportText(range, sources, note)
@@ -742,7 +744,7 @@ async function sendHighLevelDailyReport(report, recipients) {
 function buildDailyTextReportText(range, sources, note) {
   const lines = [
     "Bonalti Lead Intelligence",
-    `Daily Results: ${formatReportDate(range.since)}`,
+    `Final Daily Results: ${formatReportDate(range.since)}`,
     ""
   ];
 
@@ -762,14 +764,14 @@ function buildDailyTextReportText(range, sources, note) {
 
     if (source.bestAd) {
       lines.push(
-        "Best Ad Yesterday:",
+        "Best Ad That Day:",
         source.bestAd.name,
         `- Leads from this ad: ${source.bestAd.leads}`,
         `- Cost per lead from this ad: ${source.bestAd.leads ? formatMoneyText(source.bestAd.costPerLead) : "No leads yet"}`,
         ""
       );
     } else {
-      lines.push("Best Ad Yesterday: No ad-level data found.", "");
+      lines.push("Best Ad That Day: No ad-level data found.", "");
     }
   }
 
@@ -2162,8 +2164,8 @@ function previousWeekRange() {
 
 function previousDayRange(now = new Date()) {
   const today = localDateInTimeZone(now, config.dailyReportTimezone);
-  const yesterday = previousDate(today);
-  return { since: yesterday, until: yesterday };
+  const reportDate = localDate(addDays(new Date(`${today}T00:00:00`), -config.dailyReportLagDays));
+  return { since: reportDate, until: reportDate };
 }
 
 function addDays(date, days) {
