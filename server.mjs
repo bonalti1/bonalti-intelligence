@@ -763,29 +763,20 @@ function buildDailyTextReportText(range, sources, note) {
   for (const source of sources) {
     lines.push(
       source.name,
-      `Spend: ${formatMoneyText(source.spend)}`,
-      `Meta Leads: ${source.metaLeads}`,
-      `Meta Cost per Lead: ${formatMoneyText(source.metaCostPerLead)}`,
-      `Funnel/Sheet Leads: ${source.funnelLeads}`,
-      `Qualified Leads: ${source.qualified}`,
-      `Cost per Qualified Lead: ${formatMoneyOrNA(source.costPerQualifiedLead)}`,
-      `Lender Meetings: ${source.lenderMeetings}`,
-      `Construction Meetings: ${source.constructionMeetings}`,
-      `Cost per Meeting: ${formatMoneyOrNA(source.costPerMeeting)}`,
-      `Closed: ${source.closed}`,
+      `Spend ${formatMoneyText(source.spend)} | Meta Leads ${source.metaLeads} | Meta CPL ${formatMoneyText(source.metaCostPerLead)} ${moneyStatusLabel(source.performanceNote.metaStatus)}`,
+      `Sheet Leads ${source.funnelLeads} | Qualified ${source.qualified} | CPQL ${formatMoneyOrNA(source.costPerQualifiedLead)} ${moneyStatusLabel(source.performanceNote.qualifiedStatus)}`,
+      `Meetings ${source.totalMeetings} (L${source.lenderMeetings}/C${source.constructionMeetings}) | CPMtg ${formatMoneyOrNA(source.costPerMeeting)} ${moneyStatusLabel(source.performanceNote.meetingStatus)} | Closed ${source.closed}`,
       ""
     );
 
     if (source.bestAd) {
       lines.push(
-        "Best Ad That Day:",
-        source.bestAd.name,
-        `- Leads from this ad: ${source.bestAd.leads}`,
-        `- Cost per lead from this ad: ${source.bestAd.leads ? formatMoneyText(source.bestAd.costPerLead) : "No leads yet"}`,
+        `Best Ad: ${source.bestAd.name}`,
+        `Ad Leads ${source.bestAd.leads} | Ad CPL ${source.bestAd.leads ? formatMoneyText(source.bestAd.costPerLead) : "No leads yet"}`,
         ""
       );
     } else {
-      lines.push("Best Ad That Day: No ad-level data found.", "");
+      lines.push("Best Ad: No ad-level data found.", "");
     }
 
     lines.push(
@@ -798,12 +789,7 @@ function buildDailyTextReportText(range, sources, note) {
     );
   }
 
-  lines.push(
-    "Overall AI Note:",
-    `Best thing yesterday: ${note.best}`,
-    `Biggest concern: ${note.concern}`,
-    `Focus today: ${note.focus}`
-  );
+  lines.push(`Overall: ${note.focus}`);
 
   return lines.join("\n");
 }
@@ -850,6 +836,9 @@ function buildDailyCompanyNote(source) {
     : "No meetings were recorded, so follow-up conversion needs attention.";
 
   return {
+    metaStatus,
+    qualifiedStatus,
+    meetingStatus,
     ads,
     quality,
     meetings,
@@ -871,21 +860,28 @@ function describeMoneyStatus(status, watchLine) {
   return "healthy";
 }
 
+function moneyStatusLabel(status) {
+  if (status === "high") return "HIGH";
+  if (status === "watch") return "WATCH";
+  if (status === "missing") return "N/A";
+  return "OK";
+}
+
 function chooseDailyCompanyAction(source, metaStatus, qualifiedStatus, meetingStatus) {
   if (source.funnelLeads > 0 && (!source.qualified || qualifiedStatus === "high")) {
-    return "Review the funnel leads and confirm why only a few became qualified.";
+    return "Review funnel leads; find why only a few qualified.";
   }
   if (metaStatus === "high") {
-    return "Review the ads driving high CPL and protect budget around the best ad.";
+    return "Review high-CPL ads; protect budget around best ad.";
   }
   if (source.qualified > 0 && !source.totalMeetings) {
-    return "Push the qualified leads into lender or construction meetings today.";
+    return "Push qualified leads into lender or construction meetings today.";
   }
   if (meetingStatus === "high") {
-    return "Audit meeting follow-up and make sure every qualified lead has the next step.";
+    return "Audit follow-up; every qualified lead needs a next step.";
   }
   if (source.totalMeetings > 0) {
-    return "Update every meeting status so tomorrow's report reflects the real pipeline.";
+    return "Update meeting statuses so tomorrow reflects the real pipeline.";
   }
   return "Keep checking lead quality and update the sheet before tomorrow's report.";
 }
