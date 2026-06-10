@@ -620,13 +620,15 @@ export async function createDailyTextReport(range = previousDayRange()) {
   const data = await getDashboardData("daily", range, { includeCampaigns: true, includeCreatives: true });
   const sources = data.sourceTotals.map((source) => {
     const bestAd = bestDailyAd((source.campaignBreakdown || []).flatMap((campaign) => campaign.ads || []));
+    const metaLeads = sumField(source.campaignBreakdown || [], "leads");
 
     return {
       id: source.id,
       name: source.name,
       spend: roundMoney(source.spend),
-      leads: source.leads,
-      costPerLead: roundMoney(source.costPerLead),
+      metaLeads,
+      metaCostPerLead: roundMoney(safeDivide(source.spend, metaLeads)),
+      funnelLeads: source.leads,
       qualified: source.qualified,
       lenderMeetings: source.lender,
       constructionMeetings: source.meetings,
@@ -748,8 +750,9 @@ function buildDailyTextReportText(range, sources, note) {
     lines.push(
       source.name,
       `Spend: ${formatMoneyText(source.spend)}`,
-      `Leads: ${source.leads}`,
-      `Cost per Lead: ${formatMoneyText(source.costPerLead)}`,
+      `Meta Leads: ${source.metaLeads}`,
+      `Meta Cost per Lead: ${formatMoneyText(source.metaCostPerLead)}`,
+      `Funnel/Sheet Leads: ${source.funnelLeads}`,
       `Qualified Leads: ${source.qualified}`,
       `Lender Meetings: ${source.lenderMeetings}`,
       `Construction Meetings: ${source.constructionMeetings}`,
@@ -784,17 +787,17 @@ function buildDailyExecutiveNote(sources) {
   const withSpend = sources.filter((source) => source.spend > 0);
   const bestByMeetings = [...sources].sort((a, b) => {
     if (b.constructionMeetings !== a.constructionMeetings) return b.constructionMeetings - a.constructionMeetings;
-    if (b.leads !== a.leads) return b.leads - a.leads;
-    return a.costPerLead - b.costPerLead;
+    if (b.metaLeads !== a.metaLeads) return b.metaLeads - a.metaLeads;
+    return a.metaCostPerLead - b.metaCostPerLead;
   })[0];
   const concern = [...withSpend].sort((a, b) => {
-    const aScore = a.leads ? a.costPerLead : a.spend * 2;
-    const bScore = b.leads ? b.costPerLead : b.spend * 2;
+    const aScore = a.metaLeads ? a.metaCostPerLead : a.spend * 2;
+    const bScore = b.metaLeads ? b.metaCostPerLead : b.spend * 2;
     return bScore - aScore;
   })[0];
 
   return {
-    best: bestByMeetings && (bestByMeetings.leads || bestByMeetings.constructionMeetings)
+    best: bestByMeetings && (bestByMeetings.metaLeads || bestByMeetings.constructionMeetings)
       ? `${bestByMeetings.name} had the strongest result signal.`
       : "No strong lead or meeting signal showed up.",
     concern: concern
