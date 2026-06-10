@@ -755,41 +755,27 @@ async function sendHighLevelDailyReport(report, recipients) {
 
 function buildDailyTextReportText(range, sources, note) {
   const lines = [
-    "Bonalti Lead Intelligence",
-    `Final Daily Results: ${formatReportDate(range.since)}`,
+    `📊 Bonalti Daily - ${formatShortReportDate(range.since)}`,
     ""
   ];
 
   for (const source of sources) {
-    lines.push(
-      source.name,
-      `Spend ${formatMoneyText(source.spend)} | Meta Leads ${source.metaLeads} | Meta CPL ${formatMoneyText(source.metaCostPerLead)} ${moneyStatusLabel(source.performanceNote.metaStatus)}`,
-      `Sheet Leads ${source.funnelLeads} | Qualified ${source.qualified} | CPQL ${formatMoneyOrNA(source.costPerQualifiedLead)} ${moneyStatusLabel(source.performanceNote.qualifiedStatus)}`,
-      `Meetings ${source.totalMeetings} (L${source.lenderMeetings}/C${source.constructionMeetings}) | CPMtg ${formatMoneyOrNA(source.costPerMeeting)} ${moneyStatusLabel(source.performanceNote.meetingStatus)} | Closed ${source.closed}`,
-      ""
-    );
-
-    if (source.bestAd) {
-      lines.push(
-        `Best Ad: ${source.bestAd.name}`,
-        `Ad Leads ${source.bestAd.leads} | Ad CPL ${source.bestAd.leads ? formatMoneyText(source.bestAd.costPerLead) : "No leads yet"}`,
-        ""
-      );
-    } else {
-      lines.push("Best Ad: No ad-level data found.", "");
-    }
+    const bestAdName = source.bestAd ? shortenAdName(source.bestAd.name) : "No ad data";
+    const bestAdCpl = source.bestAd && source.bestAd.leads ? formatMoneyText(source.bestAd.costPerLead) : "N/A";
 
     lines.push(
-      "Performance Note:",
-      `Ads: ${source.performanceNote.ads}`,
-      `Lead Quality: ${source.performanceNote.quality}`,
-      `Meeting Flow: ${source.performanceNote.meetings}`,
-      `Action: ${source.performanceNote.action}`,
+      `${sourceIcon(source.name)} ${source.name}`,
+      `- Spend: ${formatMoneyText(source.spend)}`,
+      `- Meta: ${source.metaLeads} leads | CPL ${formatMoneyText(source.metaCostPerLead)} ${moneyStatusEmoji(source.performanceNote.metaStatus)}`,
+      `- Sheet: ${source.funnelLeads} leads | Qualified ${source.qualified}`,
+      `- CPQL: ${formatMoneyOrNA(source.costPerQualifiedLead)} ${moneyStatusEmoji(source.performanceNote.qualifiedStatus)} | Meetings ${source.totalMeetings}`,
+      `- Best Ad: ${bestAdName} | CPL ${bestAdCpl}`,
+      `- AI: ${source.performanceNote.smsSuggestion}`,
       ""
     );
   }
 
-  lines.push(`Overall: ${note.focus}`);
+  lines.push(`🧠 Overall: ${note.focus}`);
 
   return lines.join("\n");
 }
@@ -842,7 +828,8 @@ function buildDailyCompanyNote(source) {
     ads,
     quality,
     meetings,
-    action: chooseDailyCompanyAction(source, metaStatus, qualifiedStatus, meetingStatus)
+    action: chooseDailyCompanyAction(source, metaStatus, qualifiedStatus, meetingStatus),
+    smsSuggestion: chooseDailySmsSuggestion(source, metaStatus, qualifiedStatus, meetingStatus)
   };
 }
 
@@ -860,11 +847,30 @@ function describeMoneyStatus(status, watchLine) {
   return "healthy";
 }
 
-function moneyStatusLabel(status) {
-  if (status === "high") return "HIGH";
-  if (status === "watch") return "WATCH";
-  if (status === "missing") return "N/A";
-  return "OK";
+function moneyStatusEmoji(status) {
+  if (status === "high") return "🔴";
+  if (status === "watch") return "🟡";
+  if (status === "missing") return "⚪";
+  return "🟢";
+}
+
+function chooseDailySmsSuggestion(source, metaStatus, qualifiedStatus, meetingStatus) {
+  if (source.funnelLeads > 0 && (!source.qualified || qualifiedStatus === "high")) {
+    return `Lead quality is the issue. Review why only ${source.qualified} of ${source.funnelLeads} leads became qualified.`;
+  }
+  if (metaStatus === "high") {
+    return "Ad cost is high. Shift attention to the best ad and pause weak spend.";
+  }
+  if (source.qualified > 0 && !source.totalMeetings) {
+    return `Move the ${source.qualified} qualified leads into next steps today.`;
+  }
+  if (meetingStatus === "high") {
+    return "Meeting cost is high. Tighten follow-up and confirm every next step.";
+  }
+  if (source.qualified > 0) {
+    return `Healthy day. Push the ${source.qualified} qualified leads into next steps.`;
+  }
+  return "Keep watching lead quality and make sure the sheet is updated.";
 }
 
 function chooseDailyCompanyAction(source, metaStatus, qualifiedStatus, meetingStatus) {
@@ -884,6 +890,18 @@ function chooseDailyCompanyAction(source, metaStatus, qualifiedStatus, meetingSt
     return "Update meeting statuses so tomorrow reflects the real pipeline.";
   }
   return "Keep checking lead quality and update the sheet before tomorrow's report.";
+}
+
+function sourceIcon(name) {
+  return /cuates/i.test(name) ? "🏗️" : "🏠";
+}
+
+function shortenAdName(name) {
+  return cleanText(name)
+    .replace(/\s*\|\s*/g, " | ")
+    .replace(/Famiy/i, "Family")
+    .replace(/Testimonial/i, "Test.")
+    .slice(0, 42);
 }
 
 function bestDailyAd(ads) {
@@ -2272,6 +2290,10 @@ function localDateInTimeZone(date, timeZone) {
 
 function formatReportDate(value) {
   return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date(`${value}T00:00:00`));
+}
+
+function formatShortReportDate(value) {
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(`${value}T00:00:00`));
 }
 
 function formatMoneyText(value) {
