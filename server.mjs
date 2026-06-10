@@ -622,19 +622,26 @@ export async function createDailyTextReport(range = previousDayRange()) {
   const sources = data.sourceTotals.map((source) => {
     const bestAd = bestDailyAd((source.campaignBreakdown || []).flatMap((campaign) => campaign.ads || []));
     const metaLeads = sumField(source.campaignBreakdown || [], "leads");
+    const spend = roundMoney(source.spend);
+    const metaCostPerLead = roundMoney(safeDivide(source.spend, metaLeads));
+    const totalMeetings = source.lender + source.meetings;
+    const costPerQualifiedLead = source.qualified ? roundMoney(safeDivide(source.spend, source.qualified)) : null;
+    const costPerMeeting = totalMeetings ? roundMoney(safeDivide(source.spend, totalMeetings)) : null;
 
-    return {
+    const dailySource = {
       id: source.id,
       name: source.name,
-      spend: roundMoney(source.spend),
+      spend,
       metaLeads,
-      metaCostPerLead: roundMoney(safeDivide(source.spend, metaLeads)),
+      metaCostPerLead,
       funnelLeads: source.leads,
       qualified: source.qualified,
       lenderMeetings: source.lender,
       constructionMeetings: source.meetings,
+      totalMeetings,
       closed: source.closed,
-      costPerMeeting: roundMoney(source.costPerMeeting),
+      costPerQualifiedLead,
+      costPerMeeting,
       bestAd: bestAd ? {
         name: bestAd.name,
         leads: bestAd.leads,
@@ -642,6 +649,11 @@ export async function createDailyTextReport(range = previousDayRange()) {
         costPerLead: roundMoney(bestAd.costPerLead),
         ctr: roundRate(bestAd.ctr)
       } : null
+    };
+
+    return {
+      ...dailySource,
+      performanceNote: buildDailyCompanyNote(dailySource)
     };
   });
 
@@ -756,8 +768,10 @@ function buildDailyTextReportText(range, sources, note) {
       `Meta Cost per Lead: ${formatMoneyText(source.metaCostPerLead)}`,
       `Funnel/Sheet Leads: ${source.funnelLeads}`,
       `Qualified Leads: ${source.qualified}`,
+      `Cost per Qualified Lead: ${formatMoneyOrNA(source.costPerQualifiedLead)}`,
       `Lender Meetings: ${source.lenderMeetings}`,
       `Construction Meetings: ${source.constructionMeetings}`,
+      `Cost per Meeting: ${formatMoneyOrNA(source.costPerMeeting)}`,
       `Closed: ${source.closed}`,
       ""
     );
@@ -773,10 +787,19 @@ function buildDailyTextReportText(range, sources, note) {
     } else {
       lines.push("Best Ad That Day: No ad-level data found.", "");
     }
+
+    lines.push(
+      "Performance Note:",
+      `Ads: ${source.performanceNote.ads}`,
+      `Lead Quality: ${source.performanceNote.quality}`,
+      `Meeting Flow: ${source.performanceNote.meetings}`,
+      `Action: ${source.performanceNote.action}`,
+      ""
+    );
   }
 
   lines.push(
-    "AI Note:",
+    "Overall AI Note:",
     `Best thing yesterday: ${note.best}`,
     `Biggest concern: ${note.concern}`,
     `Focus today: ${note.focus}`
@@ -807,6 +830,64 @@ function buildDailyExecutiveNote(sources) {
       : "No paid spend concern found.",
     focus: "Check yesterday's lead quality and make sure every meeting status is updated."
   };
+}
+
+function buildDailyCompanyNote(source) {
+  const metaStatus = classifyMoneyMetric(source.metaCostPerLead, 20, 35);
+  const qualifiedStatus = classifyMoneyMetric(source.costPerQualifiedLead, 75, 150);
+  const meetingStatus = classifyMoneyMetric(source.costPerMeeting, 150, 300);
+
+  const ads = source.metaLeads
+    ? `Meta CPL is ${formatMoneyText(source.metaCostPerLead)}, ${describeMoneyStatus(metaStatus, "$20 watch line")}.`
+    : `No Meta leads were reported against ${formatMoneyText(source.spend)} in spend, so ad performance needs review.`;
+
+  const quality = source.qualified
+    ? `Cost per qualified lead is ${formatMoneyText(source.costPerQualifiedLead)}, ${describeMoneyStatus(qualifiedStatus, "$75 watch line")}, with ${source.qualified} qualified from ${source.funnelLeads} funnel leads.`
+    : `No qualified leads were marked from ${source.funnelLeads} funnel leads, so lead quality or follow-up needs review.`;
+
+  const meetings = source.totalMeetings
+    ? `Cost per meeting is ${formatMoneyText(source.costPerMeeting)}, ${describeMoneyStatus(meetingStatus, "$150 watch line")}, across ${source.totalMeetings} meetings.`
+    : "No meetings were recorded, so follow-up conversion needs attention.";
+
+  return {
+    ads,
+    quality,
+    meetings,
+    action: chooseDailyCompanyAction(source, metaStatus, qualifiedStatus, meetingStatus)
+  };
+}
+
+function classifyMoneyMetric(value, watchAt, highAt) {
+  if (value === null || value === undefined) return "missing";
+  if (value > highAt) return "high";
+  if (value > watchAt) return "watch";
+  return "healthy";
+}
+
+function describeMoneyStatus(status, watchLine) {
+  if (status === "high") return "high and needs review";
+  if (status === "watch") return `above the ${watchLine}`;
+  if (status === "missing") return "not enough data yet";
+  return "healthy";
+}
+
+function chooseDailyCompanyAction(source, metaStatus, qualifiedStatus, meetingStatus) {
+  if (source.funnelLeads > 0 && (!source.qualified || qualifiedStatus === "high")) {
+    return "Review the funnel leads and confirm why only a few became qualified.";
+  }
+  if (metaStatus === "high") {
+    return "Review the ads driving high CPL and protect budget around the best ad.";
+  }
+  if (source.qualified > 0 && !source.totalMeetings) {
+    return "Push the qualified leads into lender or construction meetings today.";
+  }
+  if (meetingStatus === "high") {
+    return "Audit meeting follow-up and make sure every qualified lead has the next step.";
+  }
+  if (source.totalMeetings > 0) {
+    return "Update every meeting status so tomorrow's report reflects the real pipeline.";
+  }
+  return "Keep checking lead quality and update the sheet before tomorrow's report.";
 }
 
 function bestDailyAd(ads) {
