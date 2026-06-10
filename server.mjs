@@ -43,6 +43,16 @@ const config = {
   reportFromEmail: process.env.REPORT_FROM_EMAIL || "Lead Intelligence <onboarding@resend.dev>",
   reportToEmail: process.env.REPORT_TO_EMAIL || "",
   reportSettingsFile: process.env.REPORT_SETTINGS_FILE || path.join(__dirname, ".weekly-report-settings.json"),
+  dailyReportEnabled: process.env.DAILY_REPORT_ENABLED === "true",
+  dailyReportTo: process.env.DAILY_REPORT_TO || "",
+  dailyReportChannel: process.env.DAILY_REPORT_CHANNEL || "sms",
+  dailyReportTimezone: process.env.DAILY_REPORT_TIMEZONE || "America/Chicago",
+  ghlDailyReportWebhookUrl: process.env.GHL_DAILY_REPORT_WEBHOOK_URL || "",
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || "",
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || "",
+  twilioMessagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID || "",
+  twilioFromNumber: process.env.TWILIO_FROM_NUMBER || "",
+  twilioWhatsappFrom: process.env.TWILIO_WHATSAPP_FROM || "",
   dashboardPassword: "",
   sessionCookie: process.env.DASHBOARD_SESSION_COOKIE || "lead_intelligence_session"
 };
@@ -228,6 +238,18 @@ const server = http.createServer(async (req, res) => {
       if (body.send) {
         const email = await sendWeeklyReportEmail(report, body.toEmail);
         return sendJson(res, { sent: true, email, report });
+      }
+      return sendJson(res, report);
+    }
+
+    if (url.pathname === "/api/daily-text-report") {
+      if (req.method !== "POST") return sendJson(res, { error: "Method not allowed" }, 405);
+      const body = await readJsonBody(req);
+      const range = body.since && body.until ? normalizeRange(body.since, body.until) : previousDayRange();
+      const report = await createDailyTextReport(range);
+      if (body.send) {
+        const result = await sendDailyTextReport(report, body.to || body.toPhone);
+        return sendJson(res, { sent: true, result, report });
       }
       return sendJson(res, report);
     }
@@ -592,6 +614,206 @@ export async function sendWeeklyReportEmail(report, toEmail) {
     throw new Error(`Resend email failed: ${response.status} ${JSON.stringify(payload)}`);
   }
   return payload;
+}
+
+export async function createDailyTextReport(range = previousDayRange()) {
+  const data = await getDashboardData("daily", range, { includeCampaigns: true, includeCreatives: true });
+  const sources = data.sourceTotals.map((source) => {
+    const bestAd = bestDailyAd((source.campaignBreakdown || []).flatMap((campaign) => campaign.ads || []));
+
+    return {
+      id: source.id,
+      name: source.name,
+      spend: roundMoney(source.spend),
+      leads: source.leads,
+      costPerLead: roundMoney(source.costPerLead),
+      qualified: source.qualified,
+      lenderMeetings: source.lender,
+      constructionMeetings: source.meetings,
+      closed: source.closed,
+      costPerMeeting: roundMoney(source.costPerMeeting),
+      bestAd: bestAd ? {
+        name: bestAd.name,
+        leads: bestAd.leads,
+        spend: roundMoney(bestAd.spend),
+        costPerLead: roundMoney(bestAd.costPerLead),
+        ctr: roundRate(bestAd.ctr)
+      } : null
+    };
+  });
+
+  const note = buildDailyExecutiveNote(sources);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    range,
+    subject: `Daily Lead Gen Results - ${formatReportDate(range.since)}`,
+    sources,
+    note,
+    text: buildDailyTextReportText(range, sources, note)
+  };
+}
+
+export async function sendDailyTextReport(report, toPhone) {
+  const recipients = parsePhoneList(toPhone || config.dailyReportTo);
+  if (!recipients.length) {
+    throw new Error("DAILY_REPORT_TO is missing. Add the phone number that should receive the daily text.");
+  }
+
+  if (config.dailyReportChannel === "ghl") {
+    return sendHighLevelDailyReport(report, recipients);
+  }
+
+  if (!config.twilioAccountSid || !config.twilioAuthToken) {
+    throw new Error("Twilio is not configured. Add TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN.");
+  }
+
+  const from = config.dailyReportChannel === "whatsapp"
+    ? config.twilioWhatsappFrom
+    : config.twilioFromNumber;
+
+  if (!config.twilioMessagingServiceSid && !from) {
+    throw new Error("Add TWILIO_MESSAGING_SERVICE_SID or the correct Twilio from number.");
+  }
+
+  const results = [];
+  for (const recipient of recipients) {
+    const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${config.twilioAccountSid}/Messages.json`, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${config.twilioAccountSid}:${config.twilioAuthToken}`).toString("base64")}`,
+        "content-type": "application/x-www-form-urlencoded"
+      },
+      body: new URLSearchParams({
+        ...(config.twilioMessagingServiceSid ? { MessagingServiceSid: config.twilioMessagingServiceSid } : { From: formatTwilioAddress(from, config.dailyReportChannel) }),
+        To: formatTwilioAddress(recipient, config.dailyReportChannel),
+        Body: report.text
+      })
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(`Twilio send failed: ${response.status} ${JSON.stringify(payload)}`);
+    }
+    results.push(payload);
+  }
+
+  return results;
+}
+
+async function sendHighLevelDailyReport(report, recipients) {
+  if (!config.ghlDailyReportWebhookUrl) {
+    throw new Error("GHL_DAILY_REPORT_WEBHOOK_URL is missing. Add the HighLevel inbound webhook URL.");
+  }
+
+  const results = [];
+  for (const recipient of recipients) {
+    const response = await fetch(config.ghlDailyReportWebhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: report.text,
+        phone: recipient,
+        firstName: "Daily",
+        lastName: "Report",
+        report_date: report.range?.since || "",
+        source: "bonalti-intelligence"
+      })
+    });
+
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`HighLevel webhook failed: ${response.status} ${text}`);
+    }
+
+    results.push({
+      channel: "ghl",
+      to: recipient,
+      status: response.status,
+      response: text
+    });
+  }
+
+  return results;
+}
+
+function buildDailyTextReportText(range, sources, note) {
+  const lines = [
+    "Bonalti Lead Intelligence",
+    `Daily Results: ${formatReportDate(range.since)}`,
+    ""
+  ];
+
+  for (const source of sources) {
+    lines.push(
+      source.name,
+      `Spend: ${formatMoneyText(source.spend)}`,
+      `Leads: ${source.leads}`,
+      `Cost per Lead: ${formatMoneyText(source.costPerLead)}`,
+      `Qualified Leads: ${source.qualified}`,
+      `Lender Meetings: ${source.lenderMeetings}`,
+      `Construction Meetings: ${source.constructionMeetings}`,
+      `Closed: ${source.closed}`,
+      ""
+    );
+
+    if (source.bestAd) {
+      lines.push(
+        "Best Ad Yesterday:",
+        source.bestAd.name,
+        `- Leads from this ad: ${source.bestAd.leads}`,
+        `- Cost per lead from this ad: ${source.bestAd.leads ? formatMoneyText(source.bestAd.costPerLead) : "No leads yet"}`,
+        ""
+      );
+    } else {
+      lines.push("Best Ad Yesterday: No ad-level data found.", "");
+    }
+  }
+
+  lines.push(
+    "AI Note:",
+    `Best thing yesterday: ${note.best}`,
+    `Biggest concern: ${note.concern}`,
+    `Focus today: ${note.focus}`
+  );
+
+  return lines.join("\n");
+}
+
+function buildDailyExecutiveNote(sources) {
+  const withSpend = sources.filter((source) => source.spend > 0);
+  const bestByMeetings = [...sources].sort((a, b) => {
+    if (b.constructionMeetings !== a.constructionMeetings) return b.constructionMeetings - a.constructionMeetings;
+    if (b.leads !== a.leads) return b.leads - a.leads;
+    return a.costPerLead - b.costPerLead;
+  })[0];
+  const concern = [...withSpend].sort((a, b) => {
+    const aScore = a.leads ? a.costPerLead : a.spend * 2;
+    const bScore = b.leads ? b.costPerLead : b.spend * 2;
+    return bScore - aScore;
+  })[0];
+
+  return {
+    best: bestByMeetings && (bestByMeetings.leads || bestByMeetings.constructionMeetings)
+      ? `${bestByMeetings.name} had the strongest result signal.`
+      : "No strong lead or meeting signal showed up.",
+    concern: concern
+      ? `${concern.name} needs review if spend continues without enough leads or meetings.`
+      : "No paid spend concern found.",
+    focus: "Check yesterday's lead quality and make sure every meeting status is updated."
+  };
+}
+
+function bestDailyAd(ads) {
+  const candidates = ads.filter((ad) => (ad.spend || 0) > 0 || (ad.leads || 0) > 0 || (ad.impressions || 0) > 0);
+  if (!candidates.length) return null;
+
+  return candidates.sort((a, b) => {
+    if ((b.leads || 0) !== (a.leads || 0)) return (b.leads || 0) - (a.leads || 0);
+    if ((a.leads || 0) && (b.leads || 0) && a.costPerLead !== b.costPerLead) return a.costPerLead - b.costPerLead;
+    if ((b.ctr || 0) !== (a.ctr || 0)) return (b.ctr || 0) - (a.ctr || 0);
+    return (b.spend || 0) - (a.spend || 0);
+  })[0];
 }
 
 export async function getReportSettings() {
@@ -1935,6 +2157,12 @@ function previousWeekRange() {
   };
 }
 
+function previousDayRange(now = new Date()) {
+  const today = localDateInTimeZone(now, config.dailyReportTimezone);
+  const yesterday = previousDate(today);
+  return { since: yesterday, until: yesterday };
+}
+
 function addDays(date, days) {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -1947,6 +2175,17 @@ function previousDate(dateString) {
 
 function localDate(date) {
   return new Date(date).toISOString().slice(0, 10);
+}
+
+function localDateInTimeZone(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function formatReportDate(value) {
@@ -1973,6 +2212,26 @@ function parseEmailList(value) {
       seen.add(normalized);
       return true;
     });
+}
+
+function parsePhoneList(value) {
+  const seen = new Set();
+  return String(value || "")
+    .split(/[,\n;]/)
+    .map((phone) => phone.trim())
+    .filter(Boolean)
+    .filter((phone) => {
+      const normalized = phone.replace(/^whatsapp:/, "");
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
+}
+
+function formatTwilioAddress(value, channel) {
+  const text = String(value || "").trim();
+  if (channel !== "whatsapp") return text;
+  return text.startsWith("whatsapp:") ? text : `whatsapp:${text}`;
 }
 
 function isProtectedRequest(urlPath) {

@@ -48,3 +48,51 @@ REPORT_TO_EMAIL=rolando@alto-realtygroup.com, cristo@alto-realtygroup.com, graci
 - Cost per meeting = Meta spend / scheduled meetings
 - CAC = Meta spend / closed deals
 - Close rate = closed deals / scheduled meetings
+
+## Daily SMS / WhatsApp report
+
+Preview yesterday's daily text:
+
+```bash
+npm run daily-text-report:preview
+```
+
+Send it manually:
+
+```bash
+npm run daily-text-report -- --force
+```
+
+The daily text includes each company, yesterday's spend, leads, cost per lead, qualified leads, lender meetings, construction meetings, closed deals, and the best ad from Meta for that day.
+
+Add these Render environment variables before sending:
+
+```text
+DAILY_REPORT_ENABLED=true
+DAILY_REPORT_CHANNEL=ghl
+DAILY_REPORT_TIMEZONE=America/Chicago
+DAILY_REPORT_TO=+19562576072
+GHL_DAILY_REPORT_WEBHOOK_URL=
+```
+
+For HighLevel, paste the inbound webhook URL from the published "Daily Lead Intelligence Report" workflow into `GHL_DAILY_REPORT_WEBHOOK_URL`. The app sends `message` and `phone`; HighLevel creates/updates the contact and sends the SMS body from `{{inboundWebhookRequest.message}}`.
+
+For Twilio SMS, set:
+
+```text
+DAILY_REPORT_CHANNEL=sms
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_MESSAGING_SERVICE_SID=
+TWILIO_FROM_NUMBER=
+TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+```
+
+For WhatsApp, set:
+
+```text
+DAILY_REPORT_CHANNEL=whatsapp
+DAILY_REPORT_TO=whatsapp:+19562576072
+```
+
+Schedule `npm run daily-text-report` every day at 8:00 AM Central using a Render Cron Job or another scheduler.
