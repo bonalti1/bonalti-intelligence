@@ -105,6 +105,15 @@ const sourceDefinitions = [
   }
 ];
 
+const metaLeadActionPriority = [
+  "lead",
+  "onsite_conversion.lead",
+  "onsite_web_lead",
+  "onsite_conversion.lead_grouped",
+  "offsite_conversion.fb_pixel_lead",
+  "leadgen_grouped"
+];
+
 const metricLabels = {
   leads: "Leads",
   qualified: "Qualified",
@@ -765,9 +774,9 @@ function buildDailyTextReportText(range, sources, note) {
 
     lines.push(
       `${sourceIcon(source.name)} ${source.name}`,
-      `- Spend: ${formatMoneyText(source.spend)}`,
-      `- Meta: ${source.metaLeads} leads | CPL ${formatMoneyText(source.metaCostPerLead)} ${moneyStatusEmoji(source.performanceNote.metaStatus)}`,
-      `- Sheet: ${source.funnelLeads} leads | Qualified ${source.qualified}`,
+      `- Meta Spend: ${formatMoneyText(source.spend)}`,
+      `- Meta Leads: ${source.metaLeads} | Meta CPL ${formatMoneyText(source.metaCostPerLead)} ${moneyStatusEmoji(source.performanceNote.metaStatus)}`,
+      `- Sheet Leads: ${source.funnelLeads} | Qualified ${source.qualified}`,
       `- CPQL: ${formatMoneyOrNA(source.costPerQualifiedLead)} ${moneyStatusEmoji(source.performanceNote.qualifiedStatus)} | Meetings ${source.totalMeetings}`,
       `- Best Ad: ${bestAdName} | CPL ${bestAdCpl}`,
       `- AI: ${source.performanceNote.smsSuggestion}`,
@@ -1651,7 +1660,7 @@ async function fetchMetaAccountSummary(sourceId, accountId, range) {
   const params = new URLSearchParams({
     access_token: token,
     level: "account",
-    fields: "spend,reach,impressions,clicks,inline_link_clicks,actions,action_values,date_start,date_stop",
+    fields: "spend,reach,impressions,clicks,inline_link_clicks,actions,cost_per_action_type,action_values,date_start,date_stop",
     time_increment: "1",
     time_range: JSON.stringify({ since: range.since, until: range.until }),
     limit: "500"
@@ -1680,7 +1689,8 @@ async function fetchMetaAccountSummary(sourceId, accountId, range) {
       impressions: toNumber(row.impressions),
       clicks: toNumber(row.clicks),
       linkClicks: toNumber(row.inline_link_clicks),
-      leads: extractActionValue(row.actions, ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped"]),
+      leads: extractPrimaryActionValue(row.actions, metaLeadActionPriority),
+      metaCostPerLead: extractPrimaryActionValue(row.cost_per_action_type, metaLeadActionPriority),
       conversions: extractActionValue(row.actions, ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped", "onsite_conversion.messaging_conversation_started_7d"]),
       conversionValue: extractActionValue(row.action_values, ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"])
     })));
@@ -1697,7 +1707,7 @@ async function fetchMetaAccountSpend(sourceId, accountId, range, options = {}) {
   const params = new URLSearchParams({
     access_token: token,
     level: "ad",
-    fields: "campaign_id,campaign_name,ad_id,ad_name,spend,reach,impressions,clicks,inline_link_clicks,actions,action_values,date_start,date_stop",
+    fields: "campaign_id,campaign_name,ad_id,ad_name,spend,reach,impressions,clicks,inline_link_clicks,actions,cost_per_action_type,action_values,date_start,date_stop",
     time_increment: "1",
     time_range: JSON.stringify({ since: range.since, until: range.until }),
     limit: "500"
@@ -1726,7 +1736,8 @@ async function fetchMetaAccountSpend(sourceId, accountId, range, options = {}) {
       impressions: toNumber(row.impressions),
       clicks: toNumber(row.clicks),
       linkClicks: toNumber(row.inline_link_clicks),
-      leads: extractActionValue(row.actions, ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped"]),
+      leads: extractPrimaryActionValue(row.actions, metaLeadActionPriority),
+      metaCostPerLead: extractPrimaryActionValue(row.cost_per_action_type, metaLeadActionPriority),
       conversions: extractActionValue(row.actions, ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped", "onsite_conversion.messaging_conversation_started_7d"]),
       conversionValue: extractActionValue(row.action_values, ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"])
     })));
@@ -1999,6 +2010,15 @@ function extractActionValue(actions = [], keys = []) {
   return actions.reduce((total, action) => {
     return wanted.has(action.action_type) ? total + toNumber(action.value) : total;
   }, 0);
+}
+
+function extractPrimaryActionValue(actions = [], keys = []) {
+  if (!Array.isArray(actions)) return 0;
+  for (const key of keys) {
+    const match = actions.find((action) => action.action_type === key);
+    if (match) return toNumber(match.value);
+  }
+  return 0;
 }
 
 function normalizeRange(since, until) {
