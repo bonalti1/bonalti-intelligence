@@ -105,13 +105,8 @@ const sourceDefinitions = [
   }
 ];
 
-const metaLeadActionPriority = [
-  "lead",
-  "onsite_conversion.lead",
-  "onsite_web_lead",
-  "onsite_conversion.lead_grouped",
-  "offsite_conversion.fb_pixel_lead",
-  "leadgen_grouped"
+const metaConversationActionPriority = [
+  "onsite_conversion.messaging_conversation_started_7d"
 ];
 
 const metricLabels = {
@@ -630,9 +625,9 @@ export async function createDailyTextReport(range = previousDayRange()) {
   const data = await getDashboardData("daily", range, { includeCampaigns: true, includeCreatives: true });
   const sources = data.sourceTotals.map((source) => {
     const bestAd = bestDailyAd((source.campaignBreakdown || []).flatMap((campaign) => campaign.ads || []));
-    const metaLeads = sumField(source.campaignBreakdown || [], "leads");
+    const metaConversations = sumField(source.campaignBreakdown || [], "leads");
     const spend = roundMoney(source.spend);
-    const metaCostPerLead = roundMoney(safeDivide(source.spend, metaLeads));
+    const metaCostPerConversation = roundMoney(safeDivide(source.spend, metaConversations));
     const totalMeetings = source.lender + source.meetings;
     const costPerQualifiedLead = source.qualified ? roundMoney(safeDivide(source.spend, source.qualified)) : null;
     const costPerMeeting = totalMeetings ? roundMoney(safeDivide(source.spend, totalMeetings)) : null;
@@ -641,8 +636,8 @@ export async function createDailyTextReport(range = previousDayRange()) {
       id: source.id,
       name: source.name,
       spend,
-      metaLeads,
-      metaCostPerLead,
+      metaLeads: metaConversations,
+      metaCostPerLead: metaCostPerConversation,
       funnelLeads: source.leads,
       qualified: source.qualified,
       lenderMeetings: source.lender,
@@ -775,10 +770,10 @@ function buildDailyTextReportText(range, sources, note) {
     lines.push(
       `${sourceIcon(source.name)} ${source.name}`,
       `- Meta Spend: ${formatMoneyText(source.spend)}`,
-      `- Meta Leads: ${source.metaLeads} | Meta CPL ${formatMoneyText(source.metaCostPerLead)} ${moneyStatusEmoji(source.performanceNote.metaStatus)}`,
+      `- Meta Conv: ${source.metaLeads} | Cost/Conv ${formatMoneyText(source.metaCostPerLead)} ${moneyStatusEmoji(source.performanceNote.metaStatus)}`,
       `- Sheet Leads: ${source.funnelLeads} | Qualified ${source.qualified}`,
       `- CPQL: ${formatMoneyOrNA(source.costPerQualifiedLead)} ${moneyStatusEmoji(source.performanceNote.qualifiedStatus)} | Meetings ${source.totalMeetings}`,
-      `- Best Ad: ${bestAdName} | CPL ${bestAdCpl}`,
+      `- Best Ad: ${bestAdName} | Cost/Conv ${bestAdCpl}`,
       `- AI: ${source.performanceNote.smsSuggestion}`,
       ""
     );
@@ -819,8 +814,8 @@ function buildDailyCompanyNote(source) {
   const meetingStatus = classifyMoneyMetric(source.costPerMeeting, 150, 300);
 
   const ads = source.metaLeads
-    ? `Meta CPL is ${formatMoneyText(source.metaCostPerLead)}, ${describeMoneyStatus(metaStatus, "$20 watch line")}.`
-    : `No Meta leads were reported against ${formatMoneyText(source.spend)} in spend, so ad performance needs review.`;
+    ? `Meta cost/conversation is ${formatMoneyText(source.metaCostPerLead)}, ${describeMoneyStatus(metaStatus, "$20 watch line")}.`
+    : `No Meta conversations were reported against ${formatMoneyText(source.spend)} in spend, so ad performance needs review.`;
 
   const quality = source.qualified
     ? `Cost per qualified lead is ${formatMoneyText(source.costPerQualifiedLead)}, ${describeMoneyStatus(qualifiedStatus, "$75 watch line")}, with ${source.qualified} qualified from ${source.funnelLeads} funnel leads.`
@@ -868,7 +863,7 @@ function chooseDailySmsSuggestion(source, metaStatus, qualifiedStatus, meetingSt
     return `Lead quality is the issue. Review why only ${source.qualified} of ${source.funnelLeads} leads became qualified.`;
   }
   if (metaStatus === "high") {
-    return "Ad cost is high. Shift attention to the best ad and pause weak spend.";
+    return "Cost per conversation is high. Shift attention to the best ad and pause weak spend.";
   }
   if (source.qualified > 0 && !source.totalMeetings) {
     return `Move the ${source.qualified} qualified leads into next steps today.`;
@@ -887,7 +882,7 @@ function chooseDailyCompanyAction(source, metaStatus, qualifiedStatus, meetingSt
     return "Review funnel leads; find why only a few qualified.";
   }
   if (metaStatus === "high") {
-    return "Review high-CPL ads; protect budget around best ad.";
+    return "Review high cost/conversation ads; protect budget around best ad.";
   }
   if (source.qualified > 0 && !source.totalMeetings) {
     return "Push qualified leads into lender or construction meetings today.";
@@ -1631,7 +1626,7 @@ async function fetchMetaSpend(range, options = {}) {
 
   const results = await Promise.all(accounts.map(async ([sourceId, accountId]) => {
     try {
-      const cacheKey = `meta:${options.includeCreatives ? "creative" : "base"}:${sourceId}:${accountId}:${range.since}:${range.until}`;
+      const cacheKey = `meta:messaging-conversations:${options.includeCreatives ? "creative" : "base"}:${sourceId}:${accountId}:${range.since}:${range.until}`;
       const rows = await cached(cacheKey, () => {
         if (!options.includeCampaigns && !options.includeCreatives) {
           return fetchMetaAccountSummary(sourceId, accountId, range);
@@ -1689,8 +1684,8 @@ async function fetchMetaAccountSummary(sourceId, accountId, range) {
       impressions: toNumber(row.impressions),
       clicks: toNumber(row.clicks),
       linkClicks: toNumber(row.inline_link_clicks),
-      leads: extractPrimaryActionValue(row.actions, metaLeadActionPriority),
-      metaCostPerLead: extractPrimaryActionValue(row.cost_per_action_type, metaLeadActionPriority),
+      leads: extractPrimaryActionValue(row.actions, metaConversationActionPriority),
+      metaCostPerLead: extractPrimaryActionValue(row.cost_per_action_type, metaConversationActionPriority),
       conversions: extractActionValue(row.actions, ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped", "onsite_conversion.messaging_conversation_started_7d"]),
       conversionValue: extractActionValue(row.action_values, ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"])
     })));
@@ -1736,8 +1731,8 @@ async function fetchMetaAccountSpend(sourceId, accountId, range, options = {}) {
       impressions: toNumber(row.impressions),
       clicks: toNumber(row.clicks),
       linkClicks: toNumber(row.inline_link_clicks),
-      leads: extractPrimaryActionValue(row.actions, metaLeadActionPriority),
-      metaCostPerLead: extractPrimaryActionValue(row.cost_per_action_type, metaLeadActionPriority),
+      leads: extractPrimaryActionValue(row.actions, metaConversationActionPriority),
+      metaCostPerLead: extractPrimaryActionValue(row.cost_per_action_type, metaConversationActionPriority),
       conversions: extractActionValue(row.actions, ["lead", "onsite_conversion.lead_grouped", "offsite_conversion.fb_pixel_lead", "leadgen_grouped", "onsite_conversion.messaging_conversation_started_7d"]),
       conversionValue: extractActionValue(row.action_values, ["purchase", "omni_purchase", "offsite_conversion.fb_pixel_purchase"])
     })));
